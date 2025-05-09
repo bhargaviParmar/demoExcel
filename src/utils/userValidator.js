@@ -3,15 +3,19 @@ const validator = require("validator");
 exports.validateSingleUser = (user) => {
     const errors = [];
  
-    if (!user.name || !user.email) {
+    if (!user.name ||
+        !user.email) {
         errors.push("name and email required ");
     }
     // Email Validation
+    
     if (!validator.isEmail(user.email)) {
       errors.push('Invalid email format');
     }
   
     // DOB Validation
+
+    
     if (!user.dob || isNaN(Date.parse(user.dob))) {
         console.log("Date.parse(user.dob)",Date.parse(user.dob))
       errors.push('Invalid DOB (must be a valid date)');
