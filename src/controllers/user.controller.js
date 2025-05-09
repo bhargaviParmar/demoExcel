@@ -19,7 +19,6 @@ const {
   buildFieldMap,
 } = require("../utils/validators");
 
-
 // upload User CSV
 exports.uploadUserCSV = async (req, res) => {
   if (!req.file) return error(res, 400, "No file uploaded");
@@ -57,7 +56,11 @@ exports.uploadUserCSV = async (req, res) => {
       const dobRaw = row[fieldMap.dob];
 
       if (seenEmails.has(email)) {
-        skipped.push({ name, email, error: "Duplicate email in uploaded file" });
+        skipped.push({
+          name,
+          email,
+          error: "Duplicate email in uploaded file",
+        });
         continue;
       }
       seenEmails.add(email);
@@ -72,10 +75,13 @@ exports.uploadUserCSV = async (req, res) => {
       }
 
       let dob = null;
-      if(dobRaw){
+      if (dobRaw) {
         if (typeof dobRaw === "number") {
           dob = excelDateToJSDate(dobRaw);
-        } else if (typeof dobRaw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dobRaw)) {
+        } else if (
+          typeof dobRaw === "string" &&
+          /^\d{4}-\d{2}-\d{2}$/.test(dobRaw)
+        ) {
           dob = dobRaw;
         }
 
@@ -93,7 +99,12 @@ exports.uploadUserCSV = async (req, res) => {
       let address = null;
       if (addressStr) {
         if (!isValidJson(addressStr)) {
-          skipped.push({ name, email, addressStr, error: "Invalid address json" });
+          skipped.push({
+            name,
+            email,
+            addressStr,
+            error: "Invalid address json",
+          });
           continue;
         } else {
           address = addressStr;
@@ -113,8 +124,8 @@ exports.uploadUserCSV = async (req, res) => {
       const unique_id = uuidv4();
 
       // Prepare bulk data
-      newUsers.push({ name, email, unique_id });
-      userDetails.push({ address, dob });
+      newUsers.push({ email, unique_id });
+      userDetails.push({ name, address, dob });
       mfaRecords.push({ email_token: token, is_verify: false });
       emailTasks.push({ email, token });
     }
@@ -123,7 +134,7 @@ exports.uploadUserCSV = async (req, res) => {
     // console.log("newUsers", newUsers);
     // console.log("userDetails", userDetails);
     // process.exit();
-    
+
     // Bulk insert users
     const createdUsers = await User.bulkCreate(newUsers, { returning: true });
     // Attach user_id to personal details and MFA
@@ -279,14 +290,13 @@ exports.verifyOTP = async (req, res) => {
   try {
     const user = await User.findOne({
       where: { email },
-      attributes: ["id", "email", "name"],
+      attributes: ["id", "email"],
       include: [
         { model: UserOtpVerified },
         { model: UserLoginHistory, attributes: ["isActive"] },
       ],
     });
 
-    console.log("user", user.toJSON());
     if (!user || !user.UserOtpVerified)
       return error(res, 404, "User not found");
 
@@ -311,7 +321,7 @@ exports.verifyOTP = async (req, res) => {
       where: { isActive: true },
       include: {
         model: User,
-        attributes: ["name", "email"],
+        attributes: ["email"],
       },
     });
 
@@ -325,7 +335,7 @@ exports.verifyOTP = async (req, res) => {
 
     if (loginData)
       return error(res, 401, "Already one user login in to the system ", {
-        name: loginData.User.name,
+        // name: loginData.User.name,
         email: loginData.User.email,
       });
 
@@ -367,13 +377,14 @@ exports.getDashboardUsers = async (req, res) => {
     }
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    const whereClause = {
-      id: { [Op.ne]: currentUserId },
-      [Op.or]: [
-        { name: { [Op.iLike]: `%${search}%` } },
+    const whereClause = { id: { [Op.ne]: currentUserId } };
+
+    if (search) {
+      whereClause[Op.or] = [
         { email: { [Op.iLike]: `%${search}%` } },
-      ],
-    };
+        { "$UserPersonalDetail.name$": { [Op.iLike]: `%${search}%` } },
+      ];
+    }
 
     //filter according DOB
     const personalDetailWhereClause = {};
@@ -383,17 +394,18 @@ exports.getDashboardUsers = async (req, res) => {
 
     const { rows: users, count: total } = await User.findAndCountAll({
       where: whereClause,
-      attributes: ["id", "name", "email"],
+      attributes: ["id", "email"],
       include: {
         model: UserPersonalDetail,
-        attributes: ["dob", "address"],
+        attributes: ["name", "dob", "address"],
         where: Object.keys(personalDetailWhereClause).length
           ? personalDetailWhereClause
           : undefined,
       },
       offset,
       limit: parseInt(limit),
-      order: [["name", "ASC"]],
+      // order: [["name", "ASC"]],
+      order: [[UserPersonalDetail, "name", "ASC"]],
     });
 
     return success(res, "User list fetched successfully", {

@@ -8,6 +8,14 @@ const UserPersonalDetail = sequelize.define('UserPersonalDetail', {
       primaryKey: true
     },
     // user_id
+    name: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      validate: {
+        notEmpty: true,
+        len: [1, 100],
+      },
+    },
     address: {
       type: DataTypes.JSONB,
       allowNull: true
