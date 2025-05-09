@@ -46,6 +46,10 @@ function isValidDate(dateStr) {
 }
 
 function excelDateToJSDate(serial) {
+  // Accept only serials between Jan 1, 1960 and Dec 31, 2040
+  if (typeof serial !== 'number' || serial < 21916 || serial > 76700) {
+    return;
+  }
   const utc_days = Math.floor(serial - 25569);
   const utc_value = utc_days * 86400;
   const date_info = new Date(utc_value * 1000);

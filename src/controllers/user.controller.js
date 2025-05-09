@@ -55,6 +55,7 @@ exports.uploadUserCSV = async (req, res) => {
       const addressStr = row[fieldMap.address];
       const dobRaw = row[fieldMap.dob];
 
+      console.log("dobRaw", dobRaw);
       if (seenEmails.has(email)) {
         skipped.push({
           name,
@@ -130,10 +131,186 @@ exports.uploadUserCSV = async (req, res) => {
       emailTasks.push({ email, token });
     }
 
-    // console.log("skipped", skipped);
-    // console.log("newUsers", newUsers);
-    // console.log("userDetails", userDetails);
+    console.log("skipped", skipped);
+    console.log("newUsers", newUsers);
+    console.log("userDetails", userDetails);
     // process.exit();
+
+    // Bulk insert users
+    const createdUsers = await User.bulkCreate(newUsers, { returning: true });
+    // Attach user_id to personal details and MFA
+    for (let i = 0; i < createdUsers.length; i++) {
+      userDetails[i].user_id = createdUsers[i].id;
+      mfaRecords[i].user_id = createdUsers[i].id;
+    }
+
+    await UserPersonalDetail.bulkCreate(userDetails, { validate: true });
+    await UserMFA.bulkCreate(mfaRecords);
+
+    // Send verification emails in parallel (non-blocking)
+    const emailResults = await Promise.allSettled(
+      emailTasks.map(({ email, token }) => sendVerificationEmail(email, token))
+    );
+
+    emailResults.forEach((result, index) => {
+      if (result.status === "rejected") {
+        console.error(
+          `Failed to send email to ${emailTasks[index].email}: ${result.reason.message}`
+        );
+      }
+    });
+
+    return success(res, "Users uploaded successfully.", {
+      alreadyExists,
+      created: createdUsers.map((user) => ({
+        name: user.name,
+        email: user.email,
+      })),
+      skipped: {
+        skippedUsers: skipped,
+        message: "Some users were skipped due to validation errors",
+      },
+    });
+  } catch (err) {
+    console.error("Upload error:", err);
+    return error(res, 500, "Something went wrong", err.message);
+  }
+};
+
+exports.uploadUserCSV_V2 = async (req, res) => {
+  if (!req.file) return error(res, 400, "No file uploaded");
+
+  try {
+    const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const users = xlsx.utils.sheet_to_json(sheet, { defval: "" });
+    if (!users.length) return error(res, 400, "Empty file");
+
+    // Normalize headers from first row
+    const rawHeaders = Object.keys(users[0]);
+    const fieldMap = buildFieldMap(rawHeaders);
+
+    // Ensure all required fields exist
+    const requiredFields = ["name", "email", "dob", "address"];
+    for (const field of requiredFields) {
+      if (!fieldMap[field]) {
+        return error(res, 400, `Missing required column: ${field}`);
+      }
+    }
+
+    const skipped = [];
+    const alreadyExists = [];
+    const newUsers = [];
+    const userDetails = [];
+    const mfaRecords = [];
+    const emailTasks = [];
+    const seenEmails = new Set();
+
+    for (const row of users) {
+      const name = row[fieldMap.name];
+      const email = row[fieldMap.email];
+      const addressStr = row[fieldMap.address];
+      const dobRaw = row[fieldMap.dob];
+
+      let dob = null;
+      if (dobRaw) {
+        if (typeof dobRaw === "number") {
+          dob = excelDateToJSDate(dobRaw);
+        } else if (
+          typeof dobRaw === "string" &&
+          /^\d{4}-\d{2}-\d{2}$/.test(dobRaw)
+        ) {
+          dob = dobRaw;
+        }
+      }
+      const userRowData = { name, email, addressStr, dob };
+      // Duplicate email in uploaded file error
+      if (seenEmails.has(email)) {
+        skipped.push({
+          userRowData,
+          errors: "Duplicate email in uploaded file",
+        });
+        continue;
+      }
+      seenEmails.add(email);
+
+      //validation error
+      const errors = validateSingleUser(userRowData);
+      if (errors.length > 0) {
+        skipped.push({ userRowData, errors });
+        continue;
+      }
+
+      let address = addressStr ? JSON.parse(addressStr) : null;
+
+      // if (!name || !email) {
+      //   skipped.push({ name, email, error: "name and email required " });
+      //   continue;
+      // }
+      // if (!validator.isEmail(email)) {
+      //   skipped.push({ name, email, error: "Invalid email" });
+      //   continue;
+      // }
+
+      // let dob = null;
+      // if (dobRaw) {
+      //   if (typeof dobRaw === "number") {
+      //     dob = excelDateToJSDate(dobRaw);
+      //   } else if (
+      //     typeof dobRaw === "string" &&
+      //     /^\d{4}-\d{2}-\d{2}$/.test(dobRaw)
+      //   ) {
+      //     dob = dobRaw;
+      //   }
+
+      //   if (!validator.isDate(dob)) {
+      //     skipped.push({
+      //       name,
+      //       email,
+      //       dobRaw,
+      //       error: "Invalid Date ,user YYYY-MM-DD ",
+      //     });
+      //     continue;
+      //   }
+      // }
+
+      // if (addressStr) {
+      //   if (!isValidJson(addressStr)) {
+      //     skipped.push({
+      //       name,
+      //       email,
+      //       addressStr,
+      //       error: "Invalid address json",
+      //     });
+      //     continue;
+      //   } else {
+      //     address = addressStr;
+      //   }
+      // }
+
+      const existingUser = await User.findOne({
+        where: { email },
+        attributes: ["id"],
+      });
+      if (existingUser) {
+        alreadyExists.push({ name, email });
+        continue;
+      }
+
+      const token = Math.random().toString(36).substr(2, 6);
+      const unique_id = uuidv4();
+
+      // Prepare bulk data
+      newUsers.push({ email, unique_id });
+      userDetails.push({ name, address, dob });
+      mfaRecords.push({ email_token: token, is_verify: false });
+      emailTasks.push({ email, token });
+    }
+
+    console.log("skipped", skipped);
+    console.log("newUsers", newUsers);
+    console.log("userDetails", userDetails);
+    process.exit();
 
     // Bulk insert users
     const createdUsers = await User.bulkCreate(newUsers, { returning: true });
@@ -408,6 +585,77 @@ exports.getDashboardUsers = async (req, res) => {
       order: [[UserPersonalDetail, "name", "ASC"]],
     });
 
+    // Flatten UserPersonalDetail fields into top level
+    const result = users.map((user) => {
+      const detail = user.UserPersonalDetail || {};
+      return {
+        id: user.id,
+        email: user.email,
+        name: detail.name,
+        dob: detail.dob,
+        address: detail.address,
+      };
+    });
+    return success(res, "User list fetched successfully", {
+      result,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / limit),
+    });
+  } catch (err) {
+    console.error("Dashboard fetch error:", err);
+    return error(res, 500, "Something went wrong", err.message);
+  }
+};
+exports.getDashboardUsers_V2 = async (req, res) => {
+  try {
+    const currentUserId = req.user.id;
+    const { search = "", page = 1, limit = 10, filterDOB = "" } = req.query;
+
+    // Validate filterDOB format if provided
+    if (filterDOB) {
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(filterDOB)) {
+        return error(
+          res,
+          400,
+          "Invalid date format. Please use 'YYYY-MM-DD' format."
+        );
+      }
+    }
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    const whereClause = { id: { [Op.ne]: currentUserId } };
+
+    if (search) {
+      whereClause[Op.or] = [
+        { email: { [Op.iLike]: `%${search}%` } },
+        { "$UserPersonalDetail.name$": { [Op.iLike]: `%${search}%` } },
+      ];
+    }
+
+    //filter according DOB
+    const personalDetailWhereClause = {};
+    if (filterDOB) {
+      personalDetailWhereClause.dob = filterDOB; // expected in 'YYYY-MM-DD' format
+    }
+
+    const { rows: users, count: total } = await User.findAndCountAll({
+      where: whereClause,
+      attributes: ["id", "email"],
+      include: {
+        model: UserPersonalDetail,
+        // attributes: ["name", "dob"],
+        where: Object.keys(personalDetailWhereClause).length
+          ? personalDetailWhereClause
+          : undefined,
+      },
+      offset,
+      limit: parseInt(limit),
+      // order: [["name", "ASC"]],
+      order: [[UserPersonalDetail, "name", "ASC"]],
+    });
+
     return success(res, "User list fetched successfully", {
       users,
       total,
@@ -434,12 +682,12 @@ exports.updateProfile = async (req, res) => {
     }
 
     // Update name if provided
-    if (name) user.name = name;
-    await user.save();
+    // if (name) user.name = name;
+    // await user.save();
 
     // Update address and dob
     await UserPersonalDetail.update(
-      { address, dob },
+      { name, address, dob },
       { where: { user_id: authId } }
     );
 
