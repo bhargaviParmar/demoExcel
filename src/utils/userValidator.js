@@ -17,8 +17,14 @@ exports.validateSingleUser = (user) => {
       errors.push('Invalid DOB (must be a valid date)');
     }
   
+
+
+
+
+
     // Address Validation
-    if (user.addressStr && !validator.isJSON(user.addressStr)) {
+    if (user.addressStr && 
+      !validator.isJSON(user.addressStr)) {
       errors.push('Invalid address json');
     }
   
